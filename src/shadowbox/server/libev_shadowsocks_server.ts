@@ -35,6 +35,7 @@ export async function createLibevShadowsocksServer(
 export class LibevShadowsocksServer implements ShadowsocksServer {
   private portId = new Map<number, string>();
   private portInboundBytes = new Map<number, number>();
+  private portIps = new Map<number, string[]>();
 
   constructor(
       private publicAddress: string, private metricsSocket: dgram.Socket,
@@ -59,19 +60,31 @@ export class LibevShadowsocksServer implements ShadowsocksServer {
       }
       this.portInboundBytes[metricsMessage.portNumber] = metricsMessage.totalInboundBytes;
       getConnectedClientIPAddresses(metricsMessage.portNumber)
-          .then(
-              (ipAddresses: string[]) => {
-                return Promise.all(ipAddresses.map((ipAddress) => {
-                  return ipLocation.countryForIp(ipAddress);
-                }));
-              },
-              (error) => {
-                logging.error(`Unable to get client countries: ${error.stack}`);
-                return [];
-              })
+          .catch((e) => {
+            logging.error(
+                `Unable to get client IP for port ${metricsMessage.portNumber}: ${e.stack}`);
+            return [];
+          })
+          .then((ipAddresses: string[]) => {
+            // We keep using the same IP addresses if we don't see any IP for a port.
+            // This may happen if getConnectedClientIPAddresses runs when there's no TCP
+            // connection open at that moment.
+            if (ipAddresses) {
+              this.portIps[metricsMessage.portNumber] = ipAddresses;
+            } else {
+              ipAddresses = this.portIps.get(metricsMessage.portNumber) || [];
+            }
+            return Promise.all(ipAddresses.map((ipAddress) => {
+              return ipLocation.countryForIp(ipAddress).catch((e) => {
+                logging.error(`failed to get country for IP: ${e.stack}`);
+                return 'ZZ';
+              });
+            }));
+          })
           .then((countries: string[]) => {
+            const dedupedCountries = [...new Set(countries)].sort();
             usageWriter.writeBytesTransferred(
-                this.portId[metricsMessage.portNumber] || '', dataDelta, countries);
+                this.portId[metricsMessage.portNumber] || '', dataDelta, dedupedCountries);
           })
           .catch((err: Error) => {
             logging.error(`Unable to write bytes transferred: ${err.stack}`);
@@ -151,7 +164,7 @@ function getConnectedClientIPAddresses(portNumber: number): Promise<string[]> {
       ' | sed \'s/\\]//g\'' +      // remove ] (used by ipv6)
       ' | sort | uniq';            // remove duplicates
   return execCmd(lsofCommand).then((output: string) => {
-    return output.split('\n');
+    return output.trim().split('\n').map((e) => e.trim()).filter(Boolean);
   });
 }
 
