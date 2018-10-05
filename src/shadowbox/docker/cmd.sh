@@ -38,4 +38,9 @@ ulimit -n 32768
 # Start cron, which is used to check for updates to the GeoIP database
 crond
 
+# Launch Prometheus.
+# TODO: Add supervisord or similar to automatically restart.
+# TODO: Put this one line (Alpine sh weirdness?).
+/root/shadowbox/bin/prometheus --config.file /root/shadowbox/persisted-state/prometheus/config.yml --storage.tsdb.retention 31d --storage.tsdb.path /root/shadowbox/persisted-state/prometheus/data --web.listen-address localhost:9090 --log.level debug &
+
 node app/server/main.js

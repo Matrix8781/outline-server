@@ -38,6 +38,11 @@ import {createPrometheusUsageMetricsWriter, InMemoryUsageMetrics, OutlineSharedM
 const DEFAULT_STATE_DIR = '/root/shadowbox/persisted-state';
 const MAX_STATS_FILE_AGE_MS = 5000;
 
+const METRICS_HOST = '0.0.0.0';
+const METRICS_PORT = 9095;
+
+const PROMETHEUS_ADDRESS = 'localhost:9090';
+
 // Serialized format for the metrics file.
 // WARNING: Renaming fields will break backwards-compatibility.
 interface MetricsConfigJson {
@@ -68,18 +73,19 @@ class MultiMetricsWriter implements UsageMetricsWriter {
   }
 }
 
-async function exportPrometheusMetrics(registry: prometheus.Registry): Promise<string> {
-  const localMetricsServer = await new Promise<http.Server>((resolve, _) => {
-    const server = http.createServer((_, res) => {
-      res.write(registry.metrics());
-      res.end();
-    });
-    server.on('listening', () => {
-      resolve(server);
-    });
-    server.listen({port: 0, host: 'localhost', exclusive: true});
+function exportPrometheusMetrics(registry: prometheus.Registry): Promise<void> {
+  // TODO: reject on error
+  return new Promise<void>((resolve, _) => {
+    http.createServer((_, res) => {
+          res.write(registry.metrics());
+          res.end();
+        })
+        .on('listening',
+            () => {
+              resolve();
+            })
+        .listen({port: METRICS_PORT, host: METRICS_HOST, exclusive: true});
   });
-  return `localhost:${localMetricsServer.address().port}`;
 }
 
 function reserveAccessKeyPorts(
@@ -102,10 +108,6 @@ async function main() {
   const accessKeyConfig = json_config.loadFileConfig<AccessKeyConfigJson>(
       getPersistentFilename('shadowbox_config.json'));
   reserveAccessKeyPorts(accessKeyConfig, portProvider);
-
-  prometheus.collectDefaultMetrics({register: prometheus.register});
-  const nodeMetricsLocation = await exportPrometheusMetrics(prometheus.register);
-  logging.debug(`Node metrics is at ${nodeMetricsLocation}`);
 
   const proxyHostname = process.env.SB_PUBLIC_IP;
   // Default to production metrics, as some old Docker images may not have
@@ -145,26 +147,19 @@ async function main() {
   let managerMetrics: ManagerMetrics;
   let metricsWriter: UsageMetricsWriter;
   let metricsReader: UsageMetrics;
-  const rollouts = new RolloutTracker(serverConfig.data().serverId);
-  if (rollouts.isRolloutEnabled('prometheus', 0)) {
-    const prometheusLocation = 'localhost:9090';
+
+  if (new RolloutTracker(serverConfig.data().serverId).isRolloutEnabled('prometheus', 100)) {
+    logging.info('prometheus enabled');
+
     portProvider.addReservedPort(9090);
-    runPrometheusScraper(
-        [
-          '--storage.tsdb.retention', '31d', '--storage.tsdb.path',
-          getPersistentFilename('prometheus/data'), '--web.listen-address', prometheusLocation,
-          '--log.level', verbose ? 'debug' : 'info'
-        ],
-        getPersistentFilename('prometheus/config.yml'), {
-          global: {
-            scrape_interval: '15s',
-          },
-          scrape_configs: [
-            {job_name: 'prometheus', static_configs: [{targets: [prometheusLocation]}]},
-            {job_name: 'outline-server-main', static_configs: [{targets: [nodeMetricsLocation]}]}
-          ]
-        });
-    const prometheusClient = new PrometheusClient(`http://${prometheusLocation}`);
+    portProvider.addReservedPort(METRICS_PORT);
+
+    // Export metrics, to be scraped by Prometheus.
+    // TODO: reserve this port
+    prometheus.collectDefaultMetrics({register: prometheus.register});
+    await exportPrometheusMetrics(prometheus.register);
+
+    const prometheusClient = new PrometheusClient(`http://${PROMETHEUS_ADDRESS}`);
     managerMetrics = new PrometheusManagerMetrics(prometheusClient, legacyManagerMetrics);
     metricsWriter = createPrometheusUsageMetricsWriter(prometheus.register);
     metricsReader = new PrometheusUsageMetrics(prometheusClient);

@@ -36,7 +36,6 @@ RUN /etc/periodic/weekly/update_mmdb
 
 WORKDIR /root/shadowbox
 
-COPY third_party/prometheus-2.4.3.linux-amd64/prometheus ./bin/
 COPY src/shadowbox/package.json .
 COPY yarn.lock .
 # TODO: Replace with plain old "yarn" once the base image is fixed:
@@ -48,6 +47,11 @@ COPY build/shadowbox/app app/
 
 # Create default state directory.
 RUN mkdir -p /root/shadowbox/persisted-state
+
+# Prometheus.
+RUN mkdir persisted-state/prometheus
+COPY src/shadowbox/docker/config.yml persisted-state/prometheus/
+COPY third_party/prometheus-2.4.3.linux-amd64/prometheus ./bin/
 
 COPY src/shadowbox/docker/cmd.sh /
 
